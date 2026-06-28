@@ -11,22 +11,47 @@ from homeassistant import config_entries
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers.selector import (
+    EntitySelector,
+    EntitySelectorConfig,
     SelectOptionDict,
     SelectSelector,
     SelectSelectorConfig,
     SelectSelectorMode,
 )
 
-from .sync import Sync
+from .sync import SYNC_TYPES, Sync
 from .const import (
     CONF_UID,
     DOMAIN,
     OPTIONS_CONFIG,
     OPTIONS_SELECT,
+    OPTIONS_SYNC_TYPE,
+    OPTIONS_NAME,
 )
 from .service import BemfaService
 
 _LOGGER = logging.getLogger(__name__)
+
+SYNC_TYPE_LABELS = {
+    "automation": ("自动化", "Automation"),
+    "binary_sensor": ("二元传感器", "Binary sensor"),
+    "camera": ("摄像头", "Camera"),
+    "climate": ("空调", "Climate"),
+    "cover": ("窗帘", "Cover"),
+    "fan": ("风扇", "Fan"),
+    "group": ("组", "Group"),
+    "input_boolean": ("输入布尔", "Input boolean"),
+    "light": ("灯", "Light"),
+    "lock": ("锁", "Lock"),
+    "media_player": ("媒体播放器", "Media player"),
+    "remote": ("遥控器", "Remote"),
+    "scene": ("场景", "Scene"),
+    "script": ("脚本", "Script"),
+    "sensor": ("环境传感器", "Sensor"),
+    "siren": ("警报器", "Siren"),
+    "switch": ("开关", "Switch"),
+    "vacuum": ("扫地机", "Vacuum"),
+}
 
 STEP_USER_DATA_SCHEMA = vol.Schema(
     {
@@ -89,6 +114,9 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
     # with this map we can get it in the next step
     _sync_dict: dict[str, Sync]
 
+    # sync type selected for creating syncs
+    _sync_type: str
+
     # current sync we are creating or modifu
     _sync: Sync
 
@@ -119,8 +147,8 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
     ) -> FlowResult:
         """Create a hass-to-bemfa sync."""
         if user_input is not None:
-            self._sync = self._sync_dict[user_input[OPTIONS_SELECT]]
-            return await self._async_step_sync_config()
+            self._sync_type = user_input[OPTIONS_SYNC_TYPE]
+            return await self.async_step_create_sync_entities()
 
         service = self._get_service()
         all_topics = await service.async_fetch_all_topics()
@@ -134,25 +162,90 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
             return self.async_show_form(step_id="empty", last_step=False)
 
         self._is_create = True
+        type_options = self._generate_sync_type_options(self._sync_dict.values())
 
         return self.async_show_form(
             step_id="create_sync",
             data_schema=vol.Schema(
                 {
-                    vol.Required(OPTIONS_SELECT): SelectSelector(
+                    vol.Required(OPTIONS_SYNC_TYPE): SelectSelector(
                         SelectSelectorConfig(
-                            options=[
-                                SelectOptionDict(
-                                    value=sync.entity_id,
-                                    label=sync.generate_option_label(),
-                                )
-                                for sync in self._sync_dict.values()
-                            ],
-                            mode=SelectSelectorMode.LIST,
+                            options=type_options,
+                            mode=SelectSelectorMode.DROPDOWN,
                         )
                     )
                 }
             ),
+            last_step=False,
+        )
+
+    async def async_step_create_sync_entities(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Select one or more hass entities to sync."""
+        if user_input is not None:
+            selected = user_input[OPTIONS_SELECT]
+            if isinstance(selected, str):
+                selected = [selected]
+
+            syncs = [
+                self._sync_dict[entity_id]
+                for entity_id in selected
+                if entity_id in self._sync_dict
+                and self._sync_type == self._get_sync_type(self._sync_dict[entity_id])
+            ]
+
+            if not syncs:
+                return await self.async_step_create_sync_entities()
+
+            if len(syncs) == 1:
+                self._sync = syncs[0]
+                return await self._async_step_sync_config()
+
+            service = self._get_service()
+            for sync in syncs:
+                await service.async_create_sync(sync, {OPTIONS_NAME: sync.name})
+
+            return self.async_create_entry(
+                title="", data={OPTIONS_CONFIG: self._config}
+            )
+
+        syncs = [
+            sync
+            for sync in self._sync_dict.values()
+            if self._sync_type == self._get_sync_type(sync)
+        ]
+        if not syncs:
+            return self.async_show_form(step_id="empty", last_step=False)
+
+        entity_ids = [sync.entity_id for sync in syncs]
+        domain_filter = self._get_sync_type_domain(self._sync_type)
+        if domain_filter is not None:
+            selector = EntitySelector(
+                EntitySelectorConfig(
+                    domain=domain_filter,
+                    include_entities=entity_ids,
+                    multiple=True,
+                )
+            )
+        else:
+            selector = SelectSelector(
+                SelectSelectorConfig(
+                    options=[
+                        SelectOptionDict(
+                            value=sync.entity_id,
+                            label=sync.generate_option_label(),
+                        )
+                        for sync in syncs
+                    ],
+                    mode=SelectSelectorMode.LIST,
+                    multiple=True,
+                )
+            )
+
+        return self.async_show_form(
+            step_id="create_sync_entities",
+            data_schema=vol.Schema({vol.Required(OPTIONS_SELECT): selector}),
             last_step=False,
         )
 
@@ -324,3 +417,44 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
 
     def _get_service(self) -> BemfaService:
         return self.hass.data[DOMAIN].get(self._entry_id)["service"]
+
+    def _generate_sync_type_options(self, syncs) -> list[SelectOptionDict]:
+        """Generate options for sync type selector."""
+        counts: dict[str, int] = {}
+        for sync in syncs:
+            sync_type = self._get_sync_type(sync)
+            counts[sync_type] = counts.get(sync_type, 0) + 1
+
+        return [
+            SelectOptionDict(
+                value=sync_type,
+                label=f"{self._get_sync_type_label(sync_type)} ({counts[sync_type]})",
+            )
+            for sync_type in sorted(counts)
+        ]
+
+    def _get_sync_type_label(self, sync_type: str) -> str:
+        """Return localized label for a sync type."""
+        labels = SYNC_TYPE_LABELS.get(sync_type)
+        if labels is None:
+            return sync_type
+
+        language = getattr(self.hass.config, "language", None)
+        return labels[0] if language is not None and language.startswith("zh") else labels[1]
+
+    def _get_sync_type(self, sync: Sync) -> str:
+        """Find registered sync type name for a sync instance."""
+        for sync_type, sync_cls in SYNC_TYPES.items():
+            if type(sync) is sync_cls:
+                return sync_type
+        for sync_type, sync_cls in SYNC_TYPES.items():
+            if isinstance(sync, sync_cls):
+                return sync_type
+        return sync.entity_id.split(".")[0]
+
+    def _get_sync_type_domain(self, sync_type: str) -> str | list[str] | None:
+        """Return HA entity domain filter for an entity-backed sync type."""
+        sync_cls = SYNC_TYPES.get(sync_type)
+        if sync_cls is None or not hasattr(sync_cls, "_supported_domain"):
+            return None
+        return sync_cls._supported_domain()

@@ -11,6 +11,7 @@ CONF_UID: Final = "uid"
 
 OPTIONS_CONFIG: Final = "config"
 OPTIONS_SELECT: Final = "select"
+OPTIONS_SYNC_TYPE: Final = "sync_type"
 
 OPTIONS_NAME: Final = "name"
 

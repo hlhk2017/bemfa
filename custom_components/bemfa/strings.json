@@ -27,7 +27,14 @@
             },
             "create_sync": {
                 "title": "Create sync",
-                "description": "Select an entity to create sync."
+                "description": "Select a device type first.",
+                "data": {
+                    "sync_type": "Device type"
+                }
+            },
+            "create_sync_entities": {
+                "title": "Create sync",
+                "description": "Search and select one or more entities to sync."
             },
             "modify_sync": {
                 "title": "Modify a sync",

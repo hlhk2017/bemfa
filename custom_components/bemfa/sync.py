@@ -189,6 +189,14 @@ class ControllableSync(Sync):
                     ],
                     state.attributes,
                 )
+                _LOGGING.debug(
+                    "Resolve message %s for %s to service %s.%s with data %s",
+                    msg,
+                    self._entity_id,
+                    domain,
+                    service,
+                    data,
+                )
                 data.update({ATTR_ENTITY_ID: self._entity_id})
                 self._hass.services.call(
                     domain=domain, service=service, service_data=data
