@@ -46,7 +46,7 @@ class BemfaHttp:
         if not topic.startswith(TOPIC_PREFIX):
             return
         session = async_get_clientsession(self._hass)
-        await session.post(
+        async with session.post(
             CREATE_TOPIC_URL,
             data={
                 "uid": self._uid,
@@ -54,14 +54,15 @@ class BemfaHttp:
                 "type": 1,
                 "name": name,
             },
-        )
+        ) as res:
+            res.raise_for_status()
 
     async def async_rename_topic(self, topic: str, name: str) -> None:
         """Rename a topic in bemfa service."""
         if not topic.startswith(TOPIC_PREFIX):
             return
         session = async_get_clientsession(self._hass)
-        await session.post(
+        async with session.post(
             RENAME_TOPIC_URL,
             data={
                 "uid": self._uid,
@@ -69,18 +70,20 @@ class BemfaHttp:
                 "type": 1,
                 "name": name,
             },
-        )
+        ) as res:
+            res.raise_for_status()
 
     async def async_del_topic(self, topic: str) -> None:
         """Delete a topic from bemfa service."""
         if not topic.startswith(TOPIC_PREFIX):
             return
         session = async_get_clientsession(self._hass)
-        await session.post(
+        async with session.post(
             DEL_TOPIC_URL,
             data={
                 "uid": self._uid,
                 "topic": topic,
                 "type": 1,
             },
-        )
+        ) as res:
+            res.raise_for_status()

@@ -8,6 +8,8 @@ from typing import Any
 import voluptuous as vol
 
 from homeassistant import config_entries
+from homeassistant.components.sensor import DOMAIN as SENSOR_DOMAIN
+from homeassistant.const import ATTR_DEVICE_CLASS
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers.selector import (
@@ -27,8 +29,14 @@ from .const import (
     OPTIONS_SELECT,
     OPTIONS_SYNC_TYPE,
     OPTIONS_NAME,
+    OPTIONS_TEMPERATURE,
+    OPTIONS_HUMIDITY,
+    OPTIONS_ILLUMINANCE,
+    OPTIONS_PM25,
+    OPTIONS_CO2,
 )
 from .service import BemfaService
+from .utils import has_key
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -183,6 +191,9 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         """Select one or more hass entities to sync."""
+        if self._sync_type == SENSOR_DOMAIN:
+            return await self._async_step_create_sensor_syncs(user_input)
+
         if user_input is not None:
             selected = user_input[OPTIONS_SELECT]
             if isinstance(selected, str):
@@ -246,6 +257,64 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         return self.async_show_form(
             step_id="create_sync_entities",
             data_schema=vol.Schema({vol.Required(OPTIONS_SELECT): selector}),
+            last_step=False,
+        )
+
+    async def _async_step_create_sensor_syncs(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Select environmental sensor entities to sync."""
+        sensor_options = self._collect_sensor_entity_options()
+        if user_input is not None:
+            selected = user_input[OPTIONS_SELECT]
+            if isinstance(selected, str):
+                selected = [selected]
+
+            sync_configs: dict[str, dict[str, str]] = {}
+            syncs: dict[str, Sync] = {}
+            for entity_id in selected:
+                sensor_option = sensor_options.get(entity_id)
+                if sensor_option is None:
+                    continue
+                (sync, option_key) = sensor_option
+                syncs[sync.entity_id] = sync
+                sync_config = sync_configs.setdefault(
+                    sync.entity_id,
+                    {OPTIONS_NAME: sync.name},
+                )
+                sync_config.setdefault(option_key, entity_id)
+
+            if not sync_configs:
+                return await self._async_step_create_sensor_syncs()
+
+            service = self._get_service()
+            for sync_entity_id, sync_config in sync_configs.items():
+                await service.async_create_sync(syncs[sync_entity_id], sync_config)
+
+                stored_config = syncs[sync_entity_id].config
+                if stored_config:
+                    self._config[syncs[sync_entity_id].topic] = stored_config
+
+            return self.async_create_entry(
+                title="", data={OPTIONS_CONFIG: self._config}
+            )
+
+        if not sensor_options:
+            return self.async_show_form(step_id="empty", last_step=False)
+
+        return self.async_show_form(
+            step_id="create_sync_entities",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(OPTIONS_SELECT): EntitySelector(
+                        EntitySelectorConfig(
+                            domain=SENSOR_DOMAIN,
+                            include_entities=list(sensor_options),
+                            multiple=True,
+                        )
+                    )
+                }
+            ),
             last_step=False,
         )
 
@@ -423,7 +492,13 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         counts: dict[str, int] = {}
         for sync in syncs:
             sync_type = self._get_sync_type(sync)
+            if sync_type == SENSOR_DOMAIN:
+                continue
             counts[sync_type] = counts.get(sync_type, 0) + 1
+
+        sensor_count = len(self._collect_sensor_entity_options())
+        if sensor_count:
+            counts[SENSOR_DOMAIN] = sensor_count
 
         return [
             SelectOptionDict(
@@ -458,3 +533,40 @@ class OptionsFlowHandler(config_entries.OptionsFlow):
         if sync_cls is None or not hasattr(sync_cls, "_supported_domain"):
             return None
         return sync_cls._supported_domain()
+
+    def _collect_sensor_entity_options(self) -> dict[str, tuple[Sync, str]]:
+        """Collect selectable environmental sensor entities."""
+        sensor_syncs = {
+            sync.entity_id: sync
+            for sync in self._sync_dict.values()
+            if self._get_sync_type(sync) == SENSOR_DOMAIN
+            and sync.entity_id.startswith(f"{SENSOR_DOMAIN}.")
+        }
+        sensor_options: dict[str, tuple[Sync, str]] = {}
+        for state in self.hass.states.async_all(SENSOR_DOMAIN):
+            sync = sensor_syncs.get(state.entity_id)
+            if sync is None:
+                continue
+            sensor_options[state.entity_id] = (
+                sync,
+                self._get_sensor_option_key(state.attributes),
+            )
+
+        return sensor_options
+
+    def _get_sensor_option_key(self, attributes) -> str:
+        """Map a sensor entity to a Bemfa environmental sensor field."""
+        if not has_key(attributes, ATTR_DEVICE_CLASS):
+            return OPTIONS_TEMPERATURE
+
+        device_class = attributes[ATTR_DEVICE_CLASS]
+        if device_class == "humidity":
+            return OPTIONS_HUMIDITY
+        if device_class == "illuminance":
+            return OPTIONS_ILLUMINANCE
+        if device_class == "pm25":
+            return OPTIONS_PM25
+        if device_class == "carbon_dioxide":
+            return OPTIONS_CO2
+
+        return OPTIONS_TEMPERATURE

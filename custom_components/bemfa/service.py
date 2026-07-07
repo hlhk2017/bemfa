@@ -75,19 +75,28 @@ class BemfaService:
         """Create a topic to bemfa service and keep communication by mqtt.
         Except name, we store other config details in hass side.
         """
-        sync.name = user_input.pop(OPTIONS_NAME)
-        sync.config = user_input
+        sync.name = user_input[OPTIONS_NAME]
+        sync.config = {
+            key: value for key, value in user_input.items() if key != OPTIONS_NAME
+        }
         await self._bemfa_http.async_create_topic(sync.topic, sync.name)
         self._bemfa_mqtt.create_sync(sync)
 
     async def async_modify_sync(self, sync: Sync, user_input: dict[str, str]):
         """Modify topic and/or config of a sync."""
-        name = user_input.pop(OPTIONS_NAME)
+        name = user_input[OPTIONS_NAME]
+        config = {key: value for key, value in user_input.items() if key != OPTIONS_NAME}
+        name_changed = sync.name != name
+        config_changed = sync.config != config
+
         if sync.name != name:
             sync.name = name
             await self._bemfa_http.async_rename_topic(sync.topic, name)
-        if sync.config != user_input:
-            sync.config = user_input
+
+        if config_changed:
+            sync.config = config
+
+        if name_changed or config_changed:
             self._bemfa_mqtt.modify_sync(sync)
 
     async def async_destroy_sync(self, topic: str):
